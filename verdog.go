@@ -10,6 +10,9 @@ import (
     "os"
     "bufio"
     "strings"
+
+    "github.com/deckarep/gosx-notifier"
+    "os/exec"
 )
 
 func main() {
@@ -31,6 +34,7 @@ func main() {
 
 func Check() {
     fmt.Print(WelcomeMessage)
+    fmt.Println("Checking library updates...")
 
     libs := ReadRegistry()
 
@@ -40,15 +44,19 @@ func Check() {
     requireUpdate := false
 
     for i := range libs {
-        go func() {
+        go func(i int) {
+            defer wg.Done()
             ver := GetSourceVersion(libs[i])
             if ver != libs[i].Version {
                 requireUpdate = true
                 UpdateAlert(libs[i], ver)
                 libs[i].SetVersion(ver)
+
+                if libs[i].Hook != "" {
+                    ExecHook(libs[i].Hook, ver)
+                }
             }
-            wg.Done()
-        }()
+        }(i)
     }
 
     wg.Wait()
@@ -62,13 +70,14 @@ func Check() {
 
 func Add() {
     fmt.Print(WelcomeMessage)
+    fmt.Println("Adding new library, please fill in the following information:")
 
     reader := bufio.NewReader(os.Stdin)
 
-    fmt.Print("Library name: ")
+    fmt.Print("Library name (e.g. prometheus): ")
     name, _ := reader.ReadString('\n')
 
-    fmt.Print("Current version: ")
+    fmt.Print("Current version (e.g. 1.6.2): ")
     version, _ := reader.ReadString('\n')
 
     fmt.Print("URL: ")
@@ -77,11 +86,15 @@ func Add() {
     fmt.Print("Regex: ")
     regex, _ := reader.ReadString('\n')
 
+    fmt.Print("Hook file (under the hooks/ folder): ")
+    hook, _ := reader.ReadString('\n')
+
     lib := Library{
         Name: strings.TrimSpace(name),
         Version: strings.TrimSpace(version),
         Url: strings.TrimSpace(url),
         Regex: strings.TrimSpace(regex),
+        Hook: strings.TrimSpace(hook),
     }
 
     libs := ReadRegistry()
@@ -92,7 +105,8 @@ func Add() {
 }
 
 const (
-    WelcomeMessage = "-- hello verdog --\n\n"
+    Version = "0.0.1"
+    WelcomeMessage = "-- hello verdog v" + Version + " --\n\n"
     RegistryFilePath = "registry.json"
 )
 
@@ -101,6 +115,7 @@ type Library struct {
     Version     string `json:"version"`
     Url         string `json:"url"`
     Regex       string `json:"regex"`
+    Hook        string `json:"hook"`
 }
 
 func (lib *Library) SetVersion(version string) {
@@ -128,7 +143,15 @@ func SaveRegistry(libs []Library) {
 }
 
 func UpdateAlert(lib Library, newVersion string) {
-    fmt.Printf("Library `%s` requires a version update: %s -> %s\n", lib.Name, lib.Version, newVersion)
+    info := fmt.Sprintf("Library `%s` requires a version update: %s -> %s", lib.Name, lib.Version, newVersion)
+    fmt.Println(info)
+
+    notif := gosxnotifier.NewNotification(info)
+    notif.Title = "Verdog"
+    notif.Sound = gosxnotifier.Basso
+    notif.Group = "me.yuankun.verdog"
+    notif.AppIcon = "gopher.png"
+    notif.Push()
 }
 
 func GetSourceVersion(lib Library) string {
@@ -155,4 +178,18 @@ func GetSourceVersion(lib Library) string {
     }
 
     return result["Version"]
+}
+
+func ExecHook(hook, version string) {
+    script := "./hooks/" + hook
+    if _, err := os.Stat(script); err != nil {
+        panic(err)
+    }
+
+    out, err := exec.Command(script, version).Output()
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println(string(out))
 }
